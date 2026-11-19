@@ -366,6 +366,12 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
 
     std::vector<TriangleMesh *> meshes(nMeshes, nullptr);
     std::vector<Bounds3f> meshBounds(nMeshes);
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU) {
+        CUDA_CHECK(cudaDeviceSynchronize());
+        ReenableThreadPool();
+    }
+#endif
     ParallelFor(0, nMeshes, [&](int64_t meshIndex) {
         Allocator alloc = threadAllocators.Get();
         size_t shapeIndex = meshIndexToShapeIndex[meshIndex];
@@ -434,6 +440,10 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
         meshes[meshIndex] = mesh;
         meshBounds[meshIndex] = bounds;
     });
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU)
+        DisableThreadPool();
+#endif
 
     BVH bvh(nMeshes);
     std::vector<OptixBuildInput> optixBuildInputs(nMeshes);
@@ -790,6 +800,12 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
     std::vector<BilinearPatchMesh *> meshes(nMeshes, nullptr);
     std::atomic<int> nPatches = 0;
 
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU) {
+        CUDA_CHECK(cudaDeviceSynchronize());
+        ReenableThreadPool();
+    }
+#endif
     ParallelFor(0, nMeshes, [&](int64_t meshIndex) {
         Allocator alloc = threadAllocators.Get();
         size_t shapeIndex = meshIndexToShapeIndex[meshIndex];
@@ -810,14 +826,21 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
             }
         }
     });
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU)
+        DisableThreadPool();
+#endif
 
     // Figure out where each mesh starts using entries of the aabb array
-    std::vector<int> meshAABBStartIndex(nMeshes);
+    std::vector<int> meshAABBStartIndex(nMeshes, 0);
     int aabbIndex = 0;
     for (size_t meshIndex = 0; meshIndex < meshes.size(); ++meshIndex) {
         meshAABBStartIndex[meshIndex] = aabbIndex;
-        aabbIndex += meshes[meshIndex]->nPatches;
+        if (meshes[meshIndex])
+            aabbIndex += meshes[meshIndex]->nPatches;
     }
+    if (aabbIndex == 0)
+        return {};
 
     // Create build inputs
     BVH bvh(nMeshes);
@@ -830,9 +853,26 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
     std::vector<uint32_t> flags(nMeshes);
 
     std::mutex boundsMutex;
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU) {
+        CUDA_CHECK(cudaDeviceSynchronize());
+        ReenableThreadPool();
+    }
+#endif
     ParallelFor(0, nMeshes, [&](int64_t meshIndex) {
         Allocator alloc = threadAllocators.Get();
         BilinearPatchMesh *mesh = meshes[meshIndex];
+        if (!mesh) {
+            OptixBuildInput &input = optixBuildInputs[meshIndex];
+            input.type = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
+            input.customPrimitiveArray.numSbtRecords = 1;
+            input.customPrimitiveArray.numPrimitives = 0;
+            aabbDevicePtrs[meshIndex] = 0;
+            input.customPrimitiveArray.aabbBuffers = &aabbDevicePtrs[meshIndex];
+            flags[meshIndex] = OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT;
+            input.customPrimitiveArray.flags = &flags[meshIndex];
+            return;
+        }
 
         OptixBuildInput &input = optixBuildInputs[meshIndex];
         input.type = OPTIX_BUILD_INPUT_TYPE_CUSTOM_PRIMITIVES;
@@ -900,6 +940,10 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
         std::lock_guard<std::mutex> lock(boundsMutex);
         bvh.bounds = Union(bvh.bounds, meshBounds);
     });
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU)
+        DisableThreadPool();
+#endif
 
     CUDA_CHECK(cudaMemcpyAsync(deviceAABBs, aabbs.data(),
                                aabbs.size() * sizeof(OptixAabb), cudaMemcpyHostToDevice,
@@ -1394,33 +1438,33 @@ OptiXAggregate::OptiXAggregate(
         BVH bvh;
         int sbtOffset;
     };
-    AsyncJob<GAS *> *triJob = RunAsync([&]() {
+    std::vector<GAS *> topLevelGASes;
+    {
         BVH triangleBVH = buildBVHForTriangles(
             scene.shapes, plyMeshes, optixContext, hitPGTriangle, anyhitPGShadowTriangle,
             hitPGRandomHitTriangle, textures.floatTextures, namedMaterials, materials,
             media, shapeIndexToAreaLights, threadAllocators, threadCUDAStreams);
         int sbtOffset = addHGRecords(triangleBVH);
-        return new GAS{std::move(triangleBVH), sbtOffset};
-    });
-
-    AsyncJob<GAS *> *blpJob = RunAsync([&]() {
+        topLevelGASes.push_back(new GAS{std::move(triangleBVH), sbtOffset});
+    }
+    {
         BVH blpBVH =
             buildBVHForBLPs(scene.shapes, optixContext, hitPGBilinearPatch,
                             anyhitPGShadowBilinearPatch, hitPGRandomHitBilinearPatch,
                             textures.floatTextures, namedMaterials, materials, media,
                             shapeIndexToAreaLights, threadAllocators, threadCUDAStreams);
         int bilinearSBTOffset = addHGRecords(blpBVH);
-        return new GAS{std::move(blpBVH), bilinearSBTOffset};
-    });
-
-    AsyncJob<GAS *> *quadricJob = RunAsync([&]() {
+        topLevelGASes.push_back(new GAS{std::move(blpBVH), bilinearSBTOffset});
+    }
+    {
         BVH quadricBVH = buildBVHForQuadrics(
             scene.shapes, optixContext, hitPGQuadric, anyhitPGShadowQuadric,
             hitPGRandomHitQuadric, textures.floatTextures, namedMaterials, materials,
             media, shapeIndexToAreaLights, threadAllocators, threadCUDAStreams);
         int quadricSBTOffset = addHGRecords(quadricBVH);
-        return new GAS{std::move(quadricBVH), quadricSBTOffset};
-    });
+        topLevelGASes.push_back(new GAS{std::move(quadricBVH), quadricSBTOffset});
+    }
+    CUDA_CHECK(cudaDeviceSynchronize());
 
     ///////////////////////////////////////////////////////////////////////////
     // Create IASes for instance definitions
@@ -1441,6 +1485,35 @@ OptiXAggregate::OptiXAggregate(
     for (const auto &def : scene.instanceDefinitions)
         allInstanceNames.push_back(def.first);
 
+    // Pre-read all non-displaced instance PLY files in parallel across all CPU threads while GPU is idle!
+    std::vector<std::map<int, TriQuadMesh>> preloadedInstancePLYs(allInstanceNames.size());
+    bool anyInstanceDisplaced = false;
+    for (const auto &def : scene.instanceDefinitions) {
+        for (const auto &sh : def.second->shapes) {
+            if (sh.name == "plymesh" && !sh.parameters.GetTexture("displacement").empty()) {
+                anyInstanceDisplaced = true;
+                break;
+            }
+        }
+        if (anyInstanceDisplaced)
+            break;
+    }
+#ifdef PBRT_IS_WINDOWS
+    if (Options->useGPU && !anyInstanceDisplaced && !allInstanceNames.empty()) {
+        LOG_VERBOSE("Pre-reading PLY meshes in parallel across CPU threads for %d instances",
+                    int(allInstanceNames.size()));
+        ReenableThreadPool();
+        ParallelFor(0, allInstanceNames.size(), [&](int64_t i) {
+            auto iter = scene.instanceDefinitions.find(allInstanceNames[i]);
+            CHECK(iter != scene.instanceDefinitions.end());
+            preloadedInstancePLYs[i] =
+                PreparePLYMeshes(iter->second->shapes, textures.floatTextures);
+        });
+        DisableThreadPool();
+        LOG_VERBOSE("Finished parallel pre-reading of instance PLY meshes");
+    }
+#endif
+
     std::unordered_map<InternedString, Instance, InternedStringHash> instanceMap;
     std::mutex instanceMapMutex;
     ParallelFor(0, scene.instanceDefinitions.size(), [&](int64_t i) {
@@ -1456,7 +1529,17 @@ OptiXAggregate::OptiXAggregate(
         Instance inst;
 
         std::map<int, TriQuadMesh> meshes =
-            PreparePLYMeshes(def.second->shapes, textures.floatTextures);
+            !preloadedInstancePLYs[i].empty()
+                ? std::move(preloadedInstancePLYs[i])
+                : (anyInstanceDisplaced
+                       ? PreparePLYMeshes(def.second->shapes, textures.floatTextures)
+                       : std::map<int, TriQuadMesh>{});
+#ifndef PBRT_IS_WINDOWS
+        if (meshes.empty() && !anyInstanceDisplaced)
+            meshes = PreparePLYMeshes(def.second->shapes, textures.floatTextures);
+#endif
+        if (meshes.empty() && !Options->useGPU && !anyInstanceDisplaced)
+            meshes = PreparePLYMeshes(def.second->shapes, textures.floatTextures);
 
         BVH triangleBVH = buildBVHForTriangles(
             def.second->shapes, meshes, optixContext, hitPGTriangle,
@@ -1488,6 +1571,12 @@ OptiXAggregate::OptiXAggregate(
             inst.handles[2] = quadricBVH.traversableHandle;
             inst.sbtOffsets[2] = addHGRecords(quadricBVH);
             inst.bounds = Union(inst.bounds, quadricBVH.bounds);
+        }
+
+        if ((i + 1) % 25 == 0 || i + 1 == int64_t(allInstanceNames.size())) {
+            CUDA_CHECK(cudaDeviceSynchronize());
+            LOG_VERBOSE("Built OptiX GASes for %d / %d instance definitions",
+                        int(i + 1), int(allInstanceNames.size()));
         }
 
         std::lock_guard<std::mutex> lock(instanceMapMutex);
@@ -1539,8 +1628,7 @@ OptiXAggregate::OptiXAggregate(
     gasInstance.flags =
         OPTIX_INSTANCE_FLAG_NONE;  // TODO: OPTIX_INSTANCE_FLAG_DISABLE_ANYHIT
     LOG_VERBOSE("Starting to consume top-level GAS futures");
-    for (AsyncJob<GAS *> *job : {triJob, blpJob, quadricJob}) {
-        GAS *gas = job->GetResult();
+    for (GAS *gas : topLevelGASes) {
         if (gas->bvh.traversableHandle) {
             gasInstance.traversableHandle = gas->bvh.traversableHandle;
             gasInstance.sbtOffset = gas->sbtOffset;
