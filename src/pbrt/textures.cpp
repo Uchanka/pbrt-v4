@@ -603,8 +603,11 @@ PtexTextureBase::PtexTextureBase(const std::string &filename, ColorEncoding enco
     : filename(filename), encoding(encoding), scale(scale) {
     ptexMutex.lock();
     if (!cache) {
-        int maxFiles = 100;
-        size_t maxMem = 1ull << 32;  // 4GB
+#ifdef PBRT_IS_WINDOWS
+        _setmaxstdio(8192);
+#endif
+        int maxFiles = 2048;
+        size_t maxMem = 1ull << 33;  // 8GB
         bool premultiply = true;
 
         cache = Ptex::PtexCache::create(maxFiles, maxMem, premultiply, nullptr,
@@ -760,16 +763,29 @@ GPUFloatPtexTexture::GPUFloatPtexTexture(const std::string &filename,
     Ptex::PtexTexture *texture = cache->get(filename.c_str(), error);
     CHECK(texture);
     int nFaces = texture->getInfo().numFaces;
-    texture->release();
+    int nc = texture->numChannels();
+    Ptex::PtexFilter::Options opts(Ptex::PtexFilter::FilterType::f_box);
+    Ptex::PtexFilter *filter = Ptex::PtexFilter::getFilter(texture, opts);
 
     faceValues.resize(nFaces);
     for (int i = 0; i < nFaces; ++i) {
-        Float filterWidth = 0.75f;
-        TextureEvalContext ctx(Point3f(), Vector3f(), Vector3f(), Normal3f(),
-                               Point2f(0.5f, 0.5f), filterWidth, filterWidth, filterWidth,
-                               filterWidth, i);
-        faceValues[i] = tex.Evaluate(ctx);
+        float result[3] = {0.f, 0.f, 0.f};
+        filter->eval(result, 0, nc, i, 0.5f, 0.5f, 0.75f, 0.f, 0.f, 0.75f);
+        if (encoding != ColorEncoding::Linear) {
+            uint8_t result8[3];
+            for (int c = 0; c < nc; ++c)
+                result8[c] = uint8_t(Clamp(result[c] * 255.f + 0.5f, 0, 255));
+            Float fResult[3];
+            encoding.ToLinear(pstd::MakeConstSpan(result8, nc), pstd::MakeSpan(fResult, nc));
+            for (int c = 0; c < nc; ++c)
+                result[c] = fResult[c];
+        }
+        for (int c = 0; c < nc; ++c)
+            result[c] *= scale;
+        faceValues[i] = (nc == 1) ? result[0] : (result[0] + result[1] + result[2]) / 3.f;
     }
+    filter->release();
+    texture->release();
 
     gpuPtexMemoryUsed += nFaces * sizeof(faceValues[0]);
 }
@@ -822,24 +838,31 @@ GPUSpectrumPtexTexture::GPUSpectrumPtexTexture(const std::string &filename,
     Ptex::PtexTexture *texture = cache->get(filename.c_str(), error);
     CHECK(texture);
     int nFaces = texture->getInfo().numFaces;
-    texture->release();
+    int nc = texture->numChannels();
+    Ptex::PtexFilter::Options opts(Ptex::PtexFilter::FilterType::f_box);
+    Ptex::PtexFilter *filter = Ptex::PtexFilter::getFilter(texture, opts);
 
     faceValues.resize(nFaces);
     for (int i = 0; i < nFaces; ++i) {
-        Float filterWidth = 0.75f;
-        TextureEvalContext ctx(Point3f(), Vector3f(), Vector3f(), Normal3f(),
-                               Point2f(0.5f, 0.5f), filterWidth, filterWidth, filterWidth,
-                               filterWidth, i);
-
-        float result[3];
-        int nc = tex.SampleTexture(ctx, result);
+        float result[3] = {0.f, 0.f, 0.f};
+        filter->eval(result, 0, nc, i, 0.5f, 0.5f, 0.75f, 0.f, 0.f, 0.75f);
+        if (encoding != ColorEncoding::Linear) {
+            uint8_t result8[3];
+            for (int c = 0; c < nc; ++c)
+                result8[c] = uint8_t(Clamp(result[c] * 255.f + 0.5f, 0, 255));
+            Float fResult[3];
+            encoding.ToLinear(pstd::MakeConstSpan(result8, nc), pstd::MakeSpan(fResult, nc));
+            for (int c = 0; c < nc; ++c)
+                result[c] = fResult[c];
+        }
+        for (int c = 0; c < nc; ++c)
+            result[c] *= scale;
         if (nc == 1)
             result[1] = result[2] = result[0];
-        else
-            DCHECK_EQ(3, nc);
-
         faceValues[i] = RGB(result[0], result[1], result[2]);
     }
+    filter->release();
+    texture->release();
 
     gpuPtexMemoryUsed += nFaces * sizeof(faceValues[0]);
 }
