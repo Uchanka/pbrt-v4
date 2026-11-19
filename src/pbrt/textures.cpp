@@ -768,7 +768,7 @@ GPUFloatPtexTexture::GPUFloatPtexTexture(const std::string &filename,
         TextureEvalContext ctx(Point3f(), Vector3f(), Vector3f(), Normal3f(),
                                Point2f(0.5f, 0.5f), filterWidth, filterWidth, filterWidth,
                                filterWidth, i);
-        faceValues[i] = Evaluate(ctx);
+        faceValues[i] = tex.Evaluate(ctx);
     }
 
     gpuPtexMemoryUsed += nFaces * sizeof(faceValues[0]);

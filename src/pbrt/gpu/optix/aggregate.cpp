@@ -803,7 +803,7 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
             nPatches += mesh->nPatches;
         } else if (shape.name == "curve") {
             BilinearPatchMesh *curveMesh =
-                diceCurveToBLP(shape, 5 /* nseg */, 5 /* nvert */, alloc);
+                diceCurveToBLP(shape, 3 /* nseg */, 3 /* nvert */, alloc);
             if (curveMesh) {
                 meshes[meshIndex] = curveMesh;
                 nPatches += curveMesh->nPatches;
