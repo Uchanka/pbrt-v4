@@ -207,6 +207,7 @@ class FilmBase {
     PBRT_CPU_GPU
     const PixelSensor *GetPixelSensor() const { return sensor; }
     std::string GetFilename() const { return filename; }
+    void SetFilename(const std::string &fn) { filename = fn; }
 
     PBRT_CPU_GPU
     SampledWavelengths SampleWavelengths(Float u) const {
@@ -368,6 +369,11 @@ class GBufferFilm : public FilmBase {
     Image GetImage(ImageMetadata *metadata, Float splatScale = 1);
 
     std::string ToString() const;
+
+    void UpdateOutputFromRender(const AnimatedTransform &renderFromCamera) {
+        if (applyInverse)
+            outputFromRender = renderFromCamera;
+    }
 
     PBRT_CPU_GPU void ResetPixel(Point2i p) { memset(&pixels[p], 0, sizeof(Pixel)); }
 

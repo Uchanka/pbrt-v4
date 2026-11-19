@@ -38,4 +38,15 @@ void WavefrontPathIntegrator::UpdateFilm() {
         });
 }
 
+void WavefrontPathIntegrator::ResetFilmPixels() {
+    Bounds2i pixelBounds = film.PixelBounds();
+    Vector2i res = pixelBounds.Diagonal();
+    ParallelFor(
+        "Reset film pixels", res.x * res.y,
+        PBRT_CPU_GPU_LAMBDA(int i) {
+            int x = i % res.x, y = i / res.x;
+            film.ResetPixel(pixelBounds.pMin + Vector2i(x, y));
+        });
+}
+
 }  // namespace pbrt

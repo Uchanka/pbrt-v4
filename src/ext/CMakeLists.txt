@@ -30,7 +30,9 @@ set_property (TARGET deflate PROPERTY FOLDER "ext")
 ###########################################################################
 # zlib
 
-find_package (ZLIB)
+if (NOT WIN32)
+    find_package (ZLIB)
+endif ()
 if (NOT ZLIB_FOUND)
     # Build zlib
     set (ZLIB_BUILD_STATIC_LIBS ON CACHE BOOL " " FORCE)
@@ -42,11 +44,12 @@ if (NOT ZLIB_FOUND)
     set (ZLIB_INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/zlib ${CMAKE_CURRENT_BINARY_DIR}/zlib CACHE STRING "zlib include dirs" FORCE)
     set (ZLIB_LIBRARY zlibstatic CACHE STRING "zlib library" FORCE)
     set (ZLIB_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/zlib ${CMAKE_CURRENT_BINARY_DIR}/zlib CACHE STRING "zlib include dir" FORCE)
-    set (ZLIB_FOUND TRUE CACHE BOOL "zlib found" FORCE)
 
     set_property (TARGET zlibstatic PROPERTY FOLDER "ext")
 
-    add_library (ZLIB::ZLIB ALIAS zlibstatic)
+    if (NOT TARGET ZLIB::ZLIB)
+        add_library (ZLIB::ZLIB ALIAS zlibstatic)
+    endif ()
     include_directories(${ZLIB_INCLUDE_DIRS})  # yuck, but so openexr/ptex can find zlib.h...
 endif ()
 

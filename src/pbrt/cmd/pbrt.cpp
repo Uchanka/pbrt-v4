@@ -161,6 +161,8 @@ int main(int argc, char *argv[]) {
             ParseArg(&iter, args.end(), "gpu", &options.useGPU, onError) ||
             ParseArg(&iter, args.end(), "gpu-device", &options.gpuDevice, onError) ||
 #endif
+            ParseArg(&iter, args.end(), "batch-manifest", &options.batchManifest,
+                     onError) ||
             ParseArg(&iter, args.end(), "debugstart", &options.debugStart, onError) ||
             ParseArg(&iter, args.end(), "disable-image-textures",
                      &options.disableImageTextures, onError) ||
@@ -235,6 +237,9 @@ int main(int argc, char *argv[]) {
         options.renderingSpace = RenderingCoordinateSystem::World;
     else
         ErrorExit("%s: unknown rendering coordinate system.", renderCoordSys);
+
+    if (!options.batchManifest.empty())
+        options.renderingSpace = RenderingCoordinateSystem::World;
 
     if (!options.mseReferenceImage.empty() && options.mseReferenceOutput.empty())
         ErrorExit("Must provide MSE reference output filename via "

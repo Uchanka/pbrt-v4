@@ -810,6 +810,7 @@ inline PBRT_CPU_GPU CameraSample GetCameraSample(S sampler, Point2i pPixel,
         cs.pLens = Point2f(0.5f, 0.5f);
         cs.filterWeight = 1;
     }
+    cs.pFilm += Vector2f(GetOptions().pixelJitterX, GetOptions().pixelJitterY);
     return cs;
 }
 

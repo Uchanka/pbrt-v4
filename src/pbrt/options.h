@@ -30,6 +30,7 @@ struct BasicPBRTOptions {
     bool wavefront = false;
     bool interactive = false;
     bool fullscreen = false;
+    Float pixelJitterX = 0, pixelJitterY = 0;
     RenderingCoordinateSystem renderingSpace = RenderingCoordinateSystem::CameraWorld;
 };
 
@@ -38,6 +39,7 @@ struct PBRTOptions : BasicPBRTOptions {
     int nThreads = 0;
     LogLevel logLevel = LogLevel::Error;
     std::string logFile;
+    std::string batchManifest;
     bool logUtilization = false;
     bool writePartialImages = false;
     bool recordPixelStatistics = false;

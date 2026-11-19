@@ -84,6 +84,7 @@ class WavefrontPathIntegrator {
                                  int wavefrontDepth);
 
     void UpdateFilm();
+    void ResetFilmPixels();
 
     WavefrontPathIntegrator(pstd::pmr::memory_resource *memoryResource,
                             BasicScene &scene);
