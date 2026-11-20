@@ -552,6 +552,13 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForTriangles(
     bvh.traversableHandle =
         buildOptixBVH(optixContext, optixBuildInputs, threadCUDAStreams);
 
+    for (size_t meshIndex = 0; meshIndex < nMeshes; ++meshIndex) {
+        if (pDeviceDevicePtrs[meshIndex])
+            CUDA_CHECK(cudaFree((void *)pDeviceDevicePtrs[meshIndex]));
+        if (optixBuildInputs[meshIndex].triangleArray.indexBuffer)
+            CUDA_CHECK(cudaFree((void *)optixBuildInputs[meshIndex].triangleArray.indexBuffer));
+    }
+
     return bvh;
 }
 
@@ -736,7 +743,27 @@ BilinearPatchMesh *OptiXAggregate::diceCurveToBLP(const ShapeSceneEntity &shape,
             }
             break;
         }
-        case CurveType::Flat:
+        case CurveType::Flat: {
+            Vector3f ortho[2];
+            CoordinateSystem(Normalize(dpdu), &ortho[0], &ortho[1]);
+            Normal3f nf(Normalize(ortho[1]));
+            ortho[0] *= width / 2;
+
+            blpP.push_back(p - ortho[0]);
+            blpP.push_back(p + ortho[0]);
+            blpN.push_back(nf);
+            blpN.push_back(nf);
+            blpUV.push_back(Point2f(u, 0));
+            blpUV.push_back(Point2f(u, 1));
+
+            if (i > 0) {
+                blpIndices.push_back(2 * (i - 1));
+                blpIndices.push_back(2 * (i - 1) + 1);
+                blpIndices.push_back(2 * i);
+                blpIndices.push_back(2 * i + 1);
+            }
+            break;
+        }
         case CurveType::Cylinder: {
             Vector3f ortho[2];
             CoordinateSystem(Normalize(dpdu), &ortho[0], &ortho[1]);
@@ -819,7 +846,7 @@ OptiXAggregate::BVH OptiXAggregate::buildBVHForBLPs(
             nPatches += mesh->nPatches;
         } else if (shape.name == "curve") {
             BilinearPatchMesh *curveMesh =
-                diceCurveToBLP(shape, 2 /* nseg */, 2 /* nvert */, alloc);
+                diceCurveToBLP(shape, 1 /* nseg */, 3 /* nvert */, alloc);
             if (curveMesh) {
                 meshes[meshIndex] = curveMesh;
                 nPatches += curveMesh->nPatches;
